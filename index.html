@@ -738,6 +738,7 @@
     let pomodoroTime = studyMinutes * 60;
     let pomodoroTimerId = null;
     let isPomodoroRunning = false;
+    let pomodoroPhase = 'study';   // 'study' oppure 'break'
 
     /* Calcolatrice */
     let isRad = false;
@@ -1949,42 +1950,65 @@
       openFoldersModal();
     }
 
-    /* --- POMODORO --- */
+    /* --- POMODORO (studio -> pausa con alert) --- */
     function applyPomodoroSettings() {
       studyMinutes = parseInt(document.getElementById('pomo-study-time').value) || 25;
       breakMinutes = parseInt(document.getElementById('pomo-break-time').value) || 5;
       resetPomodoro();
     }
 
-    function togglePomodoro() {
+    function updatePomodoroLabel() {
+      document.getElementById('pomo-mode-label').innerText =
+        pomodoroPhase === 'study' ? '⏱️ Studio:' : '☕ Pausa:';
+    }
+
+    function startPomodoroInterval() {
       const btn = document.getElementById('pomo-btn');
+      isPomodoroRunning = true;
+      btn.innerText = '⏸️';
+      pomodoroTimerId = setInterval(() => {
+        if (pomodoroTime > 0) { pomodoroTime--; updatePomodoroDisplay(); return; }
+
+        clearInterval(pomodoroTimerId);
+        isPomodoroRunning = false;
+
+        if (pomodoroPhase === 'study') {
+          // Fine studio -> inizia la pausa
+          pomodoroPhase = 'break';
+          pomodoroTime = breakMinutes * 60;
+          updatePomodoroLabel(); updatePomodoroDisplay();
+          setTimeout(() => {
+            alert('🔔 Tempo di studio finito!\n☕ Inizia la pausa di ' + breakMinutes + ' minuti.');
+            startPomodoroInterval();
+          }, 50);
+        } else {
+          // Fine pausa -> torna allo studio (in attesa del tuo ▶️)
+          pomodoroPhase = 'study';
+          pomodoroTime = studyMinutes * 60;
+          btn.innerText = '▶️';
+          updatePomodoroLabel(); updatePomodoroDisplay();
+          setTimeout(() => alert('🔔 Pausa finita!\nPremi ▶️ per ricominciare a studiare.'), 50);
+        }
+      }, 1000);
+    }
+
+    function togglePomodoro() {
       if (isPomodoroRunning) {
         clearInterval(pomodoroTimerId);
         isPomodoroRunning = false;
-        btn.innerText = '▶️';
+        document.getElementById('pomo-btn').innerText = '▶️';
       } else {
-        isPomodoroRunning = true;
-        btn.innerText = '⏸️';
-        pomodoroTimerId = setInterval(() => {
-          if (pomodoroTime > 0) {
-            pomodoroTime--;
-            updatePomodoroDisplay();
-          } else {
-            clearInterval(pomodoroTimerId);
-            isPomodoroRunning = false;
-            alert("🔔 Tempo scaduto!");
-            btn.innerText = '▶️';
-            updatePomodoroDisplay();
-          }
-        }, 1000);
+        startPomodoroInterval();
       }
     }
 
     function resetPomodoro() {
       clearInterval(pomodoroTimerId);
       isPomodoroRunning = false;
+      pomodoroPhase = 'study';
       pomodoroTime = studyMinutes * 60;
       document.getElementById('pomo-btn').innerText = '▶️';
+      updatePomodoroLabel();
       updatePomodoroDisplay();
     }
 
@@ -1995,36 +2019,171 @@
         `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     }
 
-    /* --- ESPORTAZIONE --- */
-    function exportMapAs(format) {
+    /* --- ESPORTAZIONE (solo contenuto dei nodi) --- */
+    const EXPORT_HIDE = '.node-tools,.node-actions,.node-resize-handle,.drawing-toolbar,.paper-head,.note-box > div:first-child';
+
+    async function captureMap() {
+      const ws = document.getElementById('workspace');
+      const els = ws.querySelectorAll('.node, .note-box, .grid-paper');
+      if (!els.length) return null;
+      ws.scrollTop = 0; ws.scrollLeft = 0;
+      const W = ws.scrollWidth, H = ws.scrollHeight;
+
+      let x1 = Infinity, y1 = Infinity, x2 = 0, y2 = 0;
+      els.forEach(el => {
+        x1 = Math.min(x1, el.offsetLeft); y1 = Math.min(y1, el.offsetTop);
+        x2 = Math.max(x2, el.offsetLeft + el.offsetWidth);
+        y2 = Math.max(y2, el.offsetTop + el.offsetHeight);
+      });
+      const pad = 30;
+      const bx = Math.max(0, x1 - pad), by = Math.max(0, y1 - pad);
+      const bw = Math.min(W, x2 + pad) - bx, bh = Math.min(H, y2 + pad) - by;
+
+      const bg = getComputedStyle(document.body).getPropertyValue('--bg-color').trim() || '#ffffff';
+      const full = await html2canvas(ws, {
+        width: W, height: H, windowWidth: W, windowHeight: H,
+        scale: 2, useCORS: true, backgroundColor: bg,
+        onclone: doc => {
+          const w = doc.getElementById('workspace');
+          w.style.overflow = 'visible';
+          w.style.width = W + 'px';
+          w.style.height = H + 'px';
+          w.style.backgroundImage = 'none';
+          doc.querySelectorAll(EXPORT_HIDE).forEach(e => e.style.display = 'none');
+        }
+      });
+
+      const s = full.width / W;
+      const out = document.createElement('canvas');
+      out.width = Math.round(bw * s); out.height = Math.round(bh * s);
+      out.getContext('2d').drawImage(full, bx * s, by * s, bw * s, bh * s, 0, 0, out.width, out.height);
+      return out;
+    }
+
+    function downloadBlob(blob, name) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
+
+    function dataUrlToBytes(u) {
+      const b = atob(u.split(',')[1]);
+      const a = new Uint8Array(b.length);
+      for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i);
+      return a;
+    }
+
+    function imgSize(src) {
+      return new Promise(res => {
+        const i = new Image();
+        i.onload = () => res({ w: i.naturalWidth, h: i.naturalHeight });
+        i.onerror = () => res({ w: 400, h: 300 });
+        i.src = src;
+      });
+    }
+
+    /* Estrae solo testo e immagini scritti nei nodi e nelle note (formule come LaTeX) */
+    function getNodesData() {
+      const list = [];
+      document.querySelectorAll('#workspace .node, #workspace .note-box').forEach(n => {
+        const c = n.querySelector('.node-content');
+        if (!c) return;
+        const clone = c.cloneNode(true);
+        clone.querySelectorAll('.math-formula').forEach(f =>
+          f.replaceWith(document.createTextNode(' ' + (f.dataset.latex || '') + ' ')));
+        const imgs = [...clone.querySelectorAll('img')].map(i => i.src);
+        clone.querySelectorAll('img').forEach(i => i.remove());
+        clone.querySelectorAll('br').forEach(b => b.replaceWith('\n'));
+        clone.querySelectorAll('div,p,li').forEach(el => el.appendChild(document.createTextNode('\n')));
+        const lines = clone.textContent.split('\n').map(s => s.trim()).filter(Boolean);
+        if (lines.length || imgs.length) list.push({ x: n.offsetLeft, y: n.offsetTop, lines, imgs });
+      });
+      list.sort((a, b) => (Math.round(a.y / 100) - Math.round(b.y / 100)) || (a.x - b.x));
+      return list;
+    }
+
+    async function exportMapAs(format) {
       if (!format) return;
-      if (format === 'png') {
-        html2canvas(document.getElementById('workspace')).then(c => {
-          const link = document.createElement('a');
-          link.download = 'Mappa_Didattica.png';
-          link.href = c.toDataURL();
-          link.click();
-        });
-      } else if (format === 'pdf') {
-        html2canvas(document.getElementById('workspace')).then(c => {
+      try {
+        const map = await captureMap();
+        if (!map) { alert('La mappa è vuota!'); return; }
+
+        if (format === 'png') {
+          map.toBlob(b => downloadBlob(b, 'Mappa_Didattica.png'));
+
+        } else if (format === 'pdf') {
           const { jsPDF } = window.jspdf;
-          const pdf = new jsPDF('l', 'mm', 'a4');
-          pdf.addImage(c.toDataURL('image/png'), 'PNG', 10, 10, 277, 190);
+          const landscape = map.width >= map.height;
+          const pdf = new jsPDF(landscape ? 'l' : 'p', 'mm', 'a4');
+          const pw = pdf.internal.pageSize.getWidth() - 20;
+          const ph = pdf.internal.pageSize.getHeight() - 20;
+          const r = Math.min(pw / map.width, ph / map.height);
+          const w = map.width * r, h = map.height * r;
+          pdf.addImage(map.toDataURL('image/png'), 'PNG', (pdf.internal.pageSize.getWidth() - w) / 2, 10, w, h);
           pdf.save('Mappa_Didattica.pdf');
-        });
-      } else if (format === 'pptx') {
-        let pptx = new PptxGenJS();
-        let slide = pptx.addSlide();
-        slide.addText("Mappa Concettuale", { x: 0.5, y: 0.5, fontSize: 20, color: "4A90E2", bold: true });
-        pptx.writeFile({ fileName: "Mappa_Didattica.pptx" });
-      } else if (format === 'docx') {
-        const { Document, Packer, Paragraph, TextRun } = window.docx;
-        const doc = new Document({ sections: [{ children: [new Paragraph({ children: [new TextRun("Mappa Didattica Inclusiva")] })] }] });
-        Packer.toBlob(doc).then(blob => {
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url; a.download = 'Mappa.docx'; a.click();
-        });
+
+        } else if (format === 'pptx') {
+          const pptx = new PptxGenJS();
+          pptx.layout = 'LAYOUT_WIDE';            // 13.33 x 7.5 pollici
+
+          // Slide 1: mappa pulita
+          const s1 = pptx.addSlide();
+          const ratio = map.width / map.height;
+          let w = 12.3, h = w / ratio;
+          if (h > 6.7) { h = 6.7; w = h * ratio; }
+          s1.addImage({ data: map.toDataURL('image/png'), x: (13.33 - w) / 2, y: (7.5 - h) / 2, w, h });
+
+          // Una slide per nodo
+          getNodesData().forEach(n => {
+            const s = pptx.addSlide();
+            const title = n.lines[0] || '';
+            const body = n.lines.slice(1);
+            const hasImg = n.imgs.length > 0;
+            const textW = hasImg ? 7.4 : 12.3;
+            s.addText(title, { x: 0.5, y: 0.4, w: 12.3, h: 1, fontSize: 30, bold: true, color: '4A90E2', fontFace: 'Arial', fit: 'shrink' });
+            if (body.length) {
+              s.addText(body.map(t => ({ text: t, options: { breakLine: true } })),
+                { x: 0.5, y: 1.6, w: textW, h: 5.4, fontSize: 20, color: '2B2B2B', fontFace: 'Arial', valign: 'top', fit: 'shrink' });
+            }
+            if (hasImg) {
+              s.addImage({ data: n.imgs[0], x: 8.2, y: 1.6, w: 4.6, h: 5.2, sizing: { type: 'contain', w: 4.6, h: 5.2 } });
+            }
+          });
+          await pptx.writeFile({ fileName: 'Mappa_Didattica.pptx' });
+
+        } else if (format === 'docx') {
+          const { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun } = window.docx;
+          const children = [];
+
+          let mw = 600, mh = Math.round(mw * map.height / map.width);
+          if (mh > 820) { mh = 820; mw = Math.round(mh * map.width / map.height); }
+          children.push(new Paragraph({ children: [new ImageRun({ data: dataUrlToBytes(map.toDataURL('image/png')), transformation: { width: mw, height: mh } })] }));
+
+          const nodes = getNodesData();
+          for (let k = 0; k < nodes.length; k++) {
+            const n = nodes[k];
+            n.lines.forEach((line, i) => {
+              children.push(new Paragraph({
+                heading: i === 0 ? HeadingLevel.HEADING_2 : undefined,
+                pageBreakBefore: (k === 0 && i === 0),
+                spacing: { before: i === 0 ? 240 : 0, after: 80 },
+                children: [new TextRun({ text: line, font: 'Arial', bold: i === 0 })]
+              }));
+            });
+            for (const src of n.imgs) {
+              const sz = await imgSize(src);
+              const w = Math.min(450, sz.w), h = Math.round(w * sz.h / sz.w);
+              children.push(new Paragraph({ children: [new ImageRun({ data: dataUrlToBytes(src), transformation: { width: w, height: h } })] }));
+            }
+          }
+          const doc = new Document({ sections: [{ children }] });
+          const blob = await Packer.toBlob(doc);
+          downloadBlob(blob, 'Mappa_Didattica.docx');
+        }
+      } catch (err) {
+        console.error(err);
+        alert('⚠️ Esportazione non riuscita. Riprova (se il problema persiste, controlla la connessione: le librerie di esportazione si caricano da internet).');
       }
     }
 
